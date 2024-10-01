@@ -6,107 +6,104 @@ Created By:  Roya Amin
 Phone No:    9028172174
 */
 --------------------------------------------------------------------
-USE Northwind
+USE Northwind;
 GO;
 
--- استفاده از روش استفاده از پارامتر در کوئری های پویا
-DECLARE @SQL NVARCHAR(1000)
-DECLARE @Pid NVARCHAR(50)
-SET @pid = '15'
+-- Using parameters in dynamic queries safely
+DECLARE @SQL NVARCHAR(1000);
+DECLARE @Pid NVARCHAR(50);
+SET @Pid = '15';
 
-SET @SQL = ' 
- SELECT ProductName , ProductID , UnitPrice, UnitsInStock  FROM Products WHERE ProductID =  '+ @Pid
- 
-EXEC (@SQL)
+-- Avoid SQL injection by using sp_executesql
+SET @SQL = N' 
+ SELECT ProductName, ProductID, UnitPrice, UnitsInStock  
+ FROM Products 
+ WHERE ProductID = @Pid';
 
+EXEC sp_executesql @SQL, N'@Pid NVARCHAR(50)', @Pid;
 
--- عدم استفاده از کش پلن
-SELECT usecounts , cacheobjtype, objectid , ST.text
-  FROM sys.dm_exec_cached_plans CP
-    CROSS APPLY sys.dm_exec_sql_text(CP.plan_handle) ST
+-- Prevent cached execution plan from being used
+SELECT usecounts, cacheobjtype, objectid, ST.text
+FROM sys.dm_exec_cached_plans CP
+CROSS APPLY sys.dm_exec_sql_text(CP.plan_handle) ST;
 
---استفاده از sp_executeSQL
-EXECUTE sp_executesql   
-        N'SELECT ProductName , ProductID , UnitPrice, UnitsInStock 
-		FROM Products WHERE ProductID =  @Pid ',  
-        N'@Pid varchar(50)',  
-        @pid = '15';
+-- Using sp_executesql for parameterized queries
+EXEC sp_executesql   
+    N'SELECT ProductName, ProductID, UnitPrice, UnitsInStock  
+      FROM Products WHERE ProductID = @Pid',  
+    N'@Pid NVARCHAR(50)',  
+    @Pid = '15';
 
+-- Handling Parameter Sniffing
+DROP PROCEDURE IF EXISTS usp_SearchProducts;
+GO
 
----بررسی مشکل Parameter Sniffing
-DROP PROCEDURE IF EXISTS usp_SearchProducts
 CREATE PROCEDURE [dbo].[usp_SearchProducts]  
 (
-	  @ProductID			INT 
-	 ,@ProductName			NVARCHAR(100) = NULL	
+    @ProductID    INT, 
+    @ProductName  NVARCHAR(100) = NULL
 )
 AS          
 BEGIN      
-	SET NOCOUNT ON;  
- 
-	DECLARE @SQL							VARCHAR(MAX)
-	DECLARE @ProductIDFilter				VARCHAR(MAX)
-	DECLARE @ProductNameFilter				VARCHAR(MAX)
-	DECLARE @all                            VARCHAR(2)   = '-1'
-	
- 
-	SET @ProductIDFilter = CASE WHEN @ProductID IS NULL OR @ProductID = 0 
-	THEN '''' + @all + ''' = ''' + @all + '''' 
-	ELSE 'ProductID = ''' +  @ProductID + '''' 
-	END
- 
-	SET @ProductNameFilter = CASE WHEN @ProductName IS NULL OR @ProductName = ''
-	THEN '''' + @all + ''' = ''' + @all + '''' 
-	ELSE 'ProductName like ''%' + @ProductName + '%''' 
-	END
- 
-		  SET @SQL = 'SELECT ProductName , 
-		                     ProductID , 
-							 UnitPrice, 
-							 UnitsInStock 
-		             FROM Products
-			WHERE ' + @ProductIDFilter
-			+ ' AND ' + @ProductNameFilter + ''
-			
- 
-			PRINT (@sql)
-			EXEC(@sql)
-END
+    SET NOCOUNT ON;
 
---حالت دوم
+    -- Declare variables for filters
+    DECLARE @ProductIDFilter NVARCHAR(MAX);
+    DECLARE @ProductNameFilter NVARCHAR(MAX);
+    DECLARE @All NVARCHAR(2) = '-1';
+
+    -- Build dynamic SQL filters
+    SET @ProductIDFilter = CASE 
+        WHEN @ProductID IS NULL OR @ProductID = 0 
+        THEN N'@All = @All' 
+        ELSE N'ProductID = @ProductID' 
+    END;
+
+    SET @ProductNameFilter = CASE 
+        WHEN @ProductName IS NULL OR @ProductName = '' 
+        THEN N'@All = @All' 
+        ELSE N'ProductName LIKE ''%' + @ProductName + '%''' 
+    END;
+
+    -- Construct the final SQL query
+    SET @SQL = N'SELECT ProductName, ProductID, UnitPrice, UnitsInStock
+                 FROM Products
+                 WHERE ' + @ProductIDFilter + N' AND ' + @ProductNameFilter;
+
+    PRINT @SQL;
+    EXEC sp_executesql @SQL, N'@ProductID INT, @All NVARCHAR(2)', @ProductID, @All;
+END;
+GO
+
+-- Alternative approach for dynamic SQL with sp_executesql
 CREATE PROCEDURE [dbo].[usp_SearchProducts2]  
 (
-	  @ProductID			INT
-	 ,@ProductName			NVARCHAR(100) = NULL	
+    @ProductID    INT, 
+    @ProductName  NVARCHAR(100) = NULL
 )
 AS          
 BEGIN      
-	SET NOCOUNT ON;  
- 
-	DECLARE @SQL							NVARCHAR(MAX)
-	DECLARE @ParameterDef					NVARCHAR(500)
- 
-    SET @ParameterDef =      '@ProductID			INT,
-							@ProductName			NVARCHAR(100)'
- 
- 
-    SET @SQL = 'SELECT ProductName , 
-		                     ProductID , 
-							 UnitPrice, 
-							 UnitsInStock 
-		             FROM Products WHERE -1=-1' 
- 
-IF @ProductID IS NOT NULL AND @ProductID <> 0 
-SET @SQL = @SQL+ ' AND ProductID = @ProductID'
- 
-IF @ProductName IS NOT NULL AND @ProductName <> ''
- 
-SET @SQL = @SQL+ ' AND ProductName like ''%'' + @ProductName + ''%'''
- 
- 
- EXEC sp_Executesql     @SQL,  @ParameterDef, @ProductID=@ProductID,@ProductName=@ProductName
-               
-               
- 
-END
---- استفاده از DQE برای ساخت اجزا بانک اطلاعات
+    SET NOCOUNT ON;
+
+    DECLARE @SQL NVARCHAR(MAX);
+    DECLARE @ParameterDef NVARCHAR(500);
+
+    -- Define the parameter string
+    SET @ParameterDef = N'@ProductID INT, @ProductName NVARCHAR(100)';
+
+    -- Start building the SQL query
+    SET @SQL = N'SELECT ProductName, ProductID, UnitPrice, UnitsInStock
+                 FROM Products
+                 WHERE 1=1';
+
+    -- Add dynamic filters
+    IF @ProductID IS NOT NULL AND @ProductID <> 0
+        SET @SQL += N' AND ProductID = @ProductID';
+
+    IF @ProductName IS NOT NULL AND @ProductName <> ''
+        SET @SQL += N' AND ProductName LIKE ''%'' + @ProductName + ''%''';
+
+    -- Execute the dynamic SQL with parameters
+    EXEC sp_executesql @SQL, @ParameterDef, @ProductID = @ProductID, @ProductName = @ProductName;
+END;
+GO
